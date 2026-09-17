@@ -1,0 +1,20 @@
+{
+  "video": "/Users/you/Documents/Surgeries/CAT-2026-017/raw.mp4",
+  "output": "/Users/you/Documents/Surgeries/CAT-2026-017/CAT-2026-017_OD_lecture.mp4",
+  "format": "horizontal",
+  "mask": [0, 0, 620, 60],
+  "audio": false,
+  "segments": [
+    {"start": 41.0, "end": 58.0, "speed": 1.0, "title": "Paracentesis"},
+    {"start": 58.0, "end": 84.0, "speed": 1.0, "title": "Main incision 2.2 mm"},
+    {"start": 84.0, "end": 110.0, "speed": 3.0, "title": "Viscoelastic"},
+    {"start": 110.0, "end": 205.0, "speed": 1.0, "title": "Continuous curvilinear capsulorhexis"},
+    {"start": 205.0, "end": 240.0, "speed": 1.0, "title": "Hydrodissection"},
+    {"start": 250.0, "end": 520.0, "speed": 2.0, "title": "Phaco stop-and-chop"},
+    {"start": 520.0, "end": 600.0, "speed": 2.0, "title": "Fragments"},
+    {"start": 600.0, "end": 760.0, "speed": 4.0, "title": "Cortical I/A"},
+    {"start": 770.0, "end": 815.0, "speed": 1.0, "title": "IOL implantation"},
+    {"start": 815.0, "end": 880.0, "speed": 4.0, "title": "Viscoelastic removal"},
+    {"start": 880.0, "end": 915.0, "speed": 2.0, "title": "Wound hydration"}
+  ]
+}
