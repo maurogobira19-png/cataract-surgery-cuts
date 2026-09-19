@@ -68,6 +68,11 @@ overlay, off-eye time excluded (or at 8x if the surgeon chose to keep it).
 ```
 SKILL_DIR/venv/bin/python SKILL_DIR/scripts/render.py ~/Documents/Surgeries/<code>/edl.json
 ```
+The script validates the EDL before encoding (segment out of order, `end` before `start`, speed of
+zero, a timestamp past the end of the video, a malformed `mask`/`crop`) and stops with the list of
+errors instead of rendering something wrong. Default quality is `crf 23` capped at 3 Mbit/s, which
+keeps a 30 min lecture around 700 MB — shareable. If the surgeon asks for an archival master, put
+`"quality": {"crf": 19, "maxrate": "50M"}` in the EDL (roughly double the size).
 Reel: copy to `edl_reel.json` with `format: "vertical"`, `crop` centered on the eye, and only the
 phases marked 1x (or the ones the surgeon points to); first segment = the most striking moment.
 

@@ -9,7 +9,9 @@ Output: <case_folder>/sheets/sheet_XX.jpg, <case_folder>/motion.json, <case_fold
 import argparse
 import json
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -31,14 +33,28 @@ def run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def need_tools():
+    for t in ("ffmpeg", "ffprobe"):
+        if not shutil.which(t):
+            raise SystemExit(f"{t} not found in PATH (install with: brew install ffmpeg)")
+
+
 def probe(video):
+    if not Path(video).is_file():
+        raise SystemExit(f"video not found: {video}")
     r = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-             "stream=width,height,r_frame_rate:format=duration", "-of", "json", str(video)])
-    d = json.loads(r.stdout)
-    s = d["streams"][0]
+             "stream=width,height,r_frame_rate,duration:format=duration", "-of", "json", str(video)])
+    try:
+        d = json.loads(r.stdout)
+        s = d["streams"][0]
+    except (ValueError, KeyError, IndexError):
+        raise SystemExit(f"could not read a video stream from {video}")
     num, den = s["r_frame_rate"].split("/")
-    return {"width": s["width"], "height": s["height"], "fps": round(int(num) / int(den), 3),
-            "duration": float(d["format"]["duration"])}
+    dur = d.get("format", {}).get("duration") or s.get("duration")
+    if dur is None:
+        raise SystemExit(f"could not read the duration of {video}")
+    return {"width": s["width"], "height": s["height"], "fps": round(int(num) / int(den or 1), 3),
+            "duration": float(dur)}
 
 
 def motion(video, out_json):
@@ -90,9 +106,12 @@ def sheets(video, folder, interval, per_sheet):
     tmp = folder / "tmp"; tmp.mkdir(exist_ok=True)
     for p in tmp.glob("*.jpg"):
         p.unlink()
-    run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"fps=1/{interval},scale=480:-1", "-q:v", "3",
-         str(tmp / "f_%05d.jpg")])
+    r = run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"fps=1/{interval},scale=480:-1", "-q:v", "3",
+             str(tmp / "f_%05d.jpg")])
     frames = sorted(tmp.glob("f_*.jpg"))
+    if not frames:
+        print(r.stderr[-2000:], file=sys.stderr)
+        raise SystemExit("ffmpeg extracted no frames - the sheets would be empty")
     f = load_font(26)
     cols = 4
     outputs = []
@@ -123,15 +142,25 @@ def main():
     a = ap.parse_args()
     video, folder = Path(a.video), Path(a.folder)
     folder.mkdir(parents=True, exist_ok=True)
+    need_tools()
     info = probe(video)
     mov = motion(video, folder / "motion.json")
     outputs = sheets(video, folder / "sheets", a.interval, a.per_sheet)
     info.update({"video": str(video), "interval": a.interval, "sheets": outputs, "idle": mov["idle"],
                  "scene_cuts": mov["scene_cuts"], "off_eye_candidates": mov["off_eye_candidate_seconds"]})
     (folder / "info.json").write_text(json.dumps(info, ensure_ascii=False, indent=1))
-    print(json.dumps({"duration_s": round(info["duration"], 1), "fps": info["fps"], "resolution": f"{info['width']}x{info['height']}",
-                      "sheets": len(outputs), "idle": mov["idle"], "scene_cuts": mov["scene_cuts"],
-                      "off_eye_candidates_s": mov["off_eye_candidate_seconds"]}, ensure_ascii=False, indent=1))
+    def head(seq, n=12):
+        """Summarize long lists: the caller reads this output, motion.json keeps everything."""
+        return seq if len(seq) <= n else seq[:n] + [f"... +{len(seq) - n} more (see motion.json)"]
+
+    off = mov["off_eye_candidate_seconds"]
+    print(json.dumps({"duration_s": round(info["duration"], 1), "fps": info["fps"],
+                      "resolution": f"{info['width']}x{info['height']}",
+                      "interval_s": a.interval, "sheets": len(outputs),
+                      "idle_count": len(mov["idle"]), "idle": head(mov["idle"]),
+                      "scene_cuts_count": len(mov["scene_cuts"]), "scene_cuts": head(mov["scene_cuts"]),
+                      "off_eye_candidates_count": len(off), "off_eye_candidates_s": head(off),
+                      "off_eye_total_s": len(off)}, ensure_ascii=False, indent=1))
 
 
 if __name__ == "__main__":
