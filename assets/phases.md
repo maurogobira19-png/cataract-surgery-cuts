@@ -33,7 +33,15 @@ surgeon decides, phase by phase.
 - Repeated viscoelastic top-ups
 - Irrigation pauses with no instrument in the eye
 
-## Reel (9:16, 30 to 45 s)
+## Vertical 9:16 (1080x1920), 30 to 45 s
 Order that works: 1) hook = the most striking frame (IOL unfolding, rhexis closing, or the event),
 2) incision 3 s, 3) rhexis 6 s, 4) phaco 8 s at 2x, 5) IOL 6 s, 6) clean final frame.
-Short titles, one line, and the technique name in the first title.
+Short titles, one line, and the technique name in the first title - if the surgeon asked for titles
+at all.
+
+Framing (`vertical_fit`): `hybrid` is the default (a 3:4 window on a blurred backdrop); `fit` puts
+the whole frame on the backdrop and cannot lose the eye; `crop` gives the biggest image but throws
+away 44% of the width, so it only works when the eye is genuinely centred. Whichever is used, give
+each segment its own `"center": [cx, cy]`, read off the sheets: in a phaco recording the eye
+routinely sits anywhere from 0.3 to 0.7 of the width, and the middle of the frame is often not the
+middle of the eye.

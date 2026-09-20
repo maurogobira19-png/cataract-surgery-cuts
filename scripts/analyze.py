@@ -16,6 +16,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+TRACK_FPS = 2
+
 FONT_CANDIDATES = ["/System/Library/Fonts/HelveticaNeue.ttc", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
 
@@ -84,21 +86,63 @@ def motion(video, out_json):
     # scene cuts: abrupt image change (camera leaves the eye, zoom, field change)
     rs = run(["ffmpeg", "-v", "info", "-i", str(video), "-vf", "fps=4,scale=320:-1,select='gt(scene,0.25)',metadata=print:file=-", "-f", "null", "-"])
     cuts = [round(float(m.group(1)), 1) for m in re.finditer(r"pts_time:([\d.]+)", rs.stdout)]
-    # saturation per second: the surgical field is saturated (iris/red reflex); off the eye it drops
-    rb = run(["ffmpeg", "-v", "info", "-i", str(video), "-vf", "fps=1,scale=160:-1,signalstats,metadata=print:file=-", "-f", "null", "-"])
-    sat = []
-    t = None
-    for ln in rb.stdout.splitlines():
-        if "pts_time" in ln:
-            t = float(ln.split("pts_time:")[1].split()[0])
-        elif "signalstats.SATAVG" in ln and t is not None:
-            sat.append([round(t), round(float(ln.split("=")[1]), 1)])
-    sat_ref = sorted(v for _, v in sat)[len(sat) // 2] if sat else 0
-    off_eye = [t for t, v in sat if v < sat_ref * 0.45]
     out = {"threshold": round(threshold, 2), "samples": [[round(t, 1), round(v, 2)] for t, v in vals], "idle": idle,
-           "scene_cuts": cuts, "median_saturation": sat_ref, "off_eye_candidate_seconds": off_eye}
+           "scene_cuts": cuts}
     Path(out_json).write_text(json.dumps(out, ensure_ascii=False))
     return out
+
+
+def field_track(video, folder, out_json, sample_fps=TRACK_FPS):
+    """Where the surgical field sits in each frame, and how saturated it is.
+
+    The microscope lights a circle over the eye: the bright, colored pixels are the field. Its
+    centroid drives the crop of the vertical export (so it stays on the eye when the scope drifts),
+    and the mean saturation tells us when the camera left the eye altogether.
+    """
+    tmp = folder / "tmp_track"; tmp.mkdir(parents=True, exist_ok=True)
+    for f in tmp.glob("*.jpg"):
+        f.unlink()
+    r = run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"fps={sample_fps},scale=120:-1",
+             "-q:v", "6", str(tmp / "g_%06d.jpg")])
+    files = sorted(tmp.glob("g_*.jpg"))
+    if not files:
+        print(r.stderr[-2000:], file=sys.stderr)
+        raise SystemExit("ffmpeg extracted no frames for tracking")
+    points, sats = [], []
+    for i, fp in enumerate(files):
+        im = Image.open(fp).convert("HSV")
+        w, h = im.size
+        sat = im.getchannel("S").tobytes()
+        val = im.getchannel("V").tobytes()
+        vmax = max(val)
+        # the lit field: bright relative to this frame's own maximum, and not grey (drape/metal).
+        # Weighting by saturation pulls the centroid onto the eye itself (conjunctiva, iris, red
+        # reflex) instead of the middle of the whole lit drape.
+        v_thr, s_thr = vmax * 0.45, 40
+        n = sx = sy = cov = 0
+        for k in range(0, len(val), 2):  # every other pixel is plenty at 120 px wide
+            if val[k] > v_thr and sat[k] > s_thr:
+                wgt = sat[k] - s_thr
+                n += wgt; sx += (k % w) * wgt; sy += (k // w) * wgt
+                cov += 1
+        t = round(i / sample_fps, 2)
+        mean_sat = sum(sat) / len(sat)
+        sats.append(mean_sat)
+        if n:
+            points.append([t, round(sx / n / w, 4), round(sy / n / h, 4), round(cov * 2 / (w * h), 3),
+                           round(mean_sat, 1)])
+        else:
+            points.append([t, 0.5, 0.5, 0.0, round(mean_sat, 1)])
+    for f in tmp.glob("*.jpg"):
+        f.unlink()
+    tmp.rmdir()
+    sat_ref = sorted(sats)[len(sats) // 2] if sats else 0
+    off_eye = sorted({int(p[0]) for p in points if p[4] < sat_ref * 0.45})
+    track = {"sample_fps": sample_fps, "median_saturation": round(sat_ref, 1),
+             "columns": ["t", "cx", "cy", "coverage", "saturation"], "points": points,
+             "off_eye_candidate_seconds": off_eye}
+    Path(out_json).write_text(json.dumps(track, ensure_ascii=False))
+    return track
 
 
 def sheets(video, folder, interval, per_sheet):
@@ -145,15 +189,17 @@ def main():
     need_tools()
     info = probe(video)
     mov = motion(video, folder / "motion.json")
+    trk = field_track(video, folder, folder / "track.json")
     outputs = sheets(video, folder / "sheets", a.interval, a.per_sheet)
     info.update({"video": str(video), "interval": a.interval, "sheets": outputs, "idle": mov["idle"],
-                 "scene_cuts": mov["scene_cuts"], "off_eye_candidates": mov["off_eye_candidate_seconds"]})
+                 "scene_cuts": mov["scene_cuts"], "off_eye_candidates": trk["off_eye_candidate_seconds"],
+                 "track": str(folder / "track.json"), "motion": str(folder / "motion.json")})
     (folder / "info.json").write_text(json.dumps(info, ensure_ascii=False, indent=1))
     def head(seq, n=12):
         """Summarize long lists: the caller reads this output, motion.json keeps everything."""
         return seq if len(seq) <= n else seq[:n] + [f"... +{len(seq) - n} more (see motion.json)"]
 
-    off = mov["off_eye_candidate_seconds"]
+    off = trk["off_eye_candidate_seconds"]
     print(json.dumps({"duration_s": round(info["duration"], 1), "fps": info["fps"],
                       "resolution": f"{info['width']}x{info['height']}",
                       "interval_s": a.interval, "sheets": len(outputs),

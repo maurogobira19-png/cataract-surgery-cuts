@@ -74,6 +74,16 @@ def source_duration(video):
         return None
 
 
+def source_size(video):
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=width,height", "-of", "csv=p=0:s=x", str(video)], capture_output=True, text=True)
+    try:
+        w, h = r.stdout.strip().split("x")[:2]
+        return int(w), int(h)
+    except ValueError:
+        return None, None
+
+
 def validate(edl):
     """Fail loudly on an EDL that would silently render garbage."""
     errs = []
@@ -101,12 +111,41 @@ def validate(edl):
         if prev_end is not None and a < prev_end - 0.01:
             print(f"warning: segment {i} starts at {a}s, before segment {i-1} ends ({prev_end}s)", file=sys.stderr)
         prev_end = b
+    for i, s_ in enumerate(segs):
+        c = s_.get("center")
+        if c is not None and (len(c) != 2 or not all(isinstance(n, (int, float)) and 0 <= n <= 1 for n in c)):
+            errs.append(f"segment {i}: 'center' must be [cx, cy] with each between 0 and 1")
     for key in ("mask", "crop"):
         box = edl.get(key)
         if box is not None and (len(box) != 4 or any(not isinstance(n, (int, float)) for n in box)):
             errs.append(f"'{key}' must be [x, y, w, h]")
     if errs:
         raise SystemExit("EDL invalid:\n- " + "\n- ".join(errs))
+
+
+def vertical_chain(fit, center, src_w, src_h, W, H):
+    """How a 16:9 microscope frame becomes a 9:16 one.
+
+    "crop" keeps full height and throws away ~44% of the width, so anything off-centre leaves the
+    shot. "fit" never crops: the whole frame sits on a blurred copy of itself. "hybrid" is the
+    middle ground and the default: a 3:4 window around the centre, the rest of the canvas filled by
+    the blurred backdrop. Only "crop" can lose the eye, and only if the centre is wrong.
+    """
+    cx, cy = center
+    if fit == "crop":
+        cw = min(src_w, int(round(src_h * W / H)) // 2 * 2)
+        x = max(0, min(src_w - cw, round(cx * src_w - cw / 2)))
+        return f"crop={cw}:{src_h}:{x}:0,scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
+    if fit == "hybrid":
+        cw = min(src_w, int(round(src_h * 3 / 4)) // 2 * 2)
+        x = max(0, min(src_w - cw, round(cx * src_w - cw / 2)))
+        fg = f"crop={cw}:{src_h}:{x}:0,scale={W}:-2"
+    else:  # "fit"
+        fg = f"scale={W}:-2"
+    # blurred, darkened copy of the same frame as the backdrop, foreground centred on it
+    return (f"split[bg][fg];[bg]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+            f"boxblur=28:2,eq=brightness=-0.18[bgb];[fg]{fg}[fgs];"
+            f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2")
 
 
 def title_png(text, W, H, path, size=54, speed=1.0):
@@ -123,9 +162,10 @@ def title_png(text, W, H, path, size=54, speed=1.0):
     img.save(path)
 
 
-def main(edl_path):
+def main(edl_path, only=()):
     need_tools()
     edl = json.loads(Path(edl_path).read_text())
+    edl["_only"] = list(only)
     validate(edl)
     video, output = edl["video"], edl["output"]
     vertical = edl.get("format") == "vertical"
@@ -134,20 +174,34 @@ def main(edl_path):
     maxrate = q.get("maxrate", "2.5M" if vertical else "3M")
     bufsize = q.get("bufsize", "6M")
     W, H = (1080, 1920) if vertical else (1920, 1080)
+    titles_on = edl.get("titles", True)
+    src_w, src_h = source_size(video)
+    fit = edl.get("vertical_fit", "hybrid")
+    if fit not in ("hybrid", "fit", "crop"):
+        raise SystemExit(f"vertical_fit must be hybrid, fit or crop - got {fit!r}")
+    default_center = edl.get("center", [0.5, 0.5])
     work = Path(output).with_suffix(""); work.mkdir(parents=True, exist_ok=True)
     pre = []
     if edl.get("mask"):
         x, y, w, h = edl["mask"]; pre.append(f"drawbox=x={x}:y={y}:w={w}:h={h}:color=black:t=fill")
     if edl.get("crop"):
         x, y, w, h = edl["crop"]; pre.append(f"crop={w}:{h}:{x}:{y}")
-    pre.append(f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}")
+    post = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
+    only = set(edl.get("_only", []))
     segs = []
     for i, s in enumerate(edl["segments"]):
         v = float(s.get("speed", 1.0)); dur = (s["end"] - s["start"]) / v
         seg = work / f"seg_{i:02d}.mp4"
-        chain = ",".join(pre) + f",setpts=PTS/{v},fps={FPS}"
+        if only and i not in only and seg.is_file():
+            segs.append(seg); print(f"seg {i:02d}: kept (unchanged)"); continue
+        steps = list(pre)
+        if vertical and not edl.get("crop") and src_w:
+            steps.append(vertical_chain(fit, s.get("center", default_center), src_w, src_h, W, H))
+        else:
+            steps.append(post)
+        chain = ",".join(steps) + f",setpts=PTS/{v},fps={FPS}"
         inputs = ["-ss", str(s["start"]), "-to", str(s["end"]), "-i", video]
-        if s.get("title"):
+        if s.get("title") and titles_on:
             png = work / f"t_{i:02d}.png"; title_png(s["title"], W, H, png, edl.get("title_style", {}).get("size", 54), v)
             inputs += ["-loop", "1", "-i", str(png)]
             show = max(0.6, min(3.5, dur))
@@ -168,4 +222,12 @@ def main(edl_path):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    args = sys.argv[1:]
+    only = []
+    if "--segments" in args:
+        k = args.index("--segments")
+        only = [int(n) for n in args[k + 1].split(",") if n.strip() != ""]
+        del args[k:k + 2]
+    if not args:
+        raise SystemExit("usage: render.py edl.json [--segments 2,5]   (re-renders only those segments)")
+    main(args[0], only)

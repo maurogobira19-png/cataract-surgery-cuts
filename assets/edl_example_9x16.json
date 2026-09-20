@@ -1,0 +1,54 @@
+{
+  "video": "/Users/you/Documents/Surgeries/CAT-2026-017/raw.mp4",
+  "output": "/Users/you/Documents/Surgeries/CAT-2026-017/CAT-2026-017_OD_9x16.mp4",
+  "format": "vertical",
+  "mask": [
+    0,
+    0,
+    620,
+    60
+  ],
+  "audio": false,
+  "segments": [
+    {
+      "start": 110.0,
+      "end": 205.0,
+      "speed": 1.0,
+      "title": "Continuous curvilinear capsulorhexis",
+      "center": [
+        0.42,
+        0.5
+      ]
+    },
+    {
+      "start": 250.0,
+      "end": 520.0,
+      "speed": 2.0,
+      "title": "Phaco stop-and-chop",
+      "center": [
+        0.55,
+        0.5
+      ]
+    },
+    {
+      "start": 770.0,
+      "end": 815.0,
+      "speed": 1.0,
+      "title": "IOL implantation",
+      "center": [
+        0.61,
+        0.5
+      ]
+    }
+  ],
+  "titles": false,
+  "quality": {
+    "crf": 23,
+    "maxrate": "3M"
+  },
+  "vertical_fit": "hybrid",
+  "center": [
+    0.5,
+    0.5
+  ]
+}
